@@ -16,7 +16,13 @@ export default function App() {
     const sessionManager = SessionManager.getInstance()
     const tabTracker = TabTracker.getInstance()
 
-    // Check for existing session on app init
+    // Inject session manager into tab tracker
+    tabTracker.setSessionManager(sessionManager)
+
+    // Initialize tab tracking first (this will check session validity)
+    tabTracker.init()
+
+    // Then check for existing session
     const existingSession = sessionManager.getSession()
     if (existingSession) {
       setIsAuthenticated(true)
@@ -45,8 +51,8 @@ export default function App() {
       const { count } = event.detail
       console.log(`Active tabs: ${count}`)
 
-      // If count reaches 0, user will be logged out by the tab tracker
-      if (count === 0) {
+      // If count reaches 0 and we're authenticated, log out
+      if (count === 0 && isAuthenticated) {
         setIsAuthenticated(false)
         setUsername("")
         console.log("All tabs closed - user logged out")
@@ -56,15 +62,12 @@ export default function App() {
     window.addEventListener("sessionChange", handleSessionChange as EventListener)
     window.addEventListener("tabCountChange", handleTabCountChange as EventListener)
 
-    // Initialize tab tracking
-    tabTracker.init()
-
     return () => {
       window.removeEventListener("sessionChange", handleSessionChange as EventListener)
       window.removeEventListener("tabCountChange", handleTabCountChange as EventListener)
       tabTracker.cleanup()
     }
-  }, [])
+  }, [isAuthenticated])
 
   const handleLogin = (loginUsername: string, password: string) => {
     // Simple authentication check (in real app, this would be server-side)
