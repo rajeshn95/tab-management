@@ -2,8 +2,12 @@ export class TabTracker {
   private static instance: TabTracker
   private broadcastChannel: BroadcastChannel
   private readonly TAB_COUNT_KEY = "app_tab_count"
+  private readonly TAB_REGISTRY_KEY = "app_tab_registry"
+  private readonly HEARTBEAT_INTERVAL = 1000 // 1 second
+  private readonly TAB_TIMEOUT = 3000 // 3 seconds
   private tabId: string
   private isInitialized = false
+  private heartbeatInterval: NodeJS.Timeout | null = null
 
   private constructor() {
     this.broadcastChannel = new BroadcastChannel("tab_tracker")
@@ -26,7 +30,7 @@ export class TabTracker {
     this.broadcastChannel.addEventListener("message", (event) => {
       const { type, tabId, count } = event.data
 
-      if (type === "tab_opened" || type === "tab_closed") {
+      if (type === "tab_opened" || type === "tab_closed" || type === "tab_cleanup") {
         // Update local count and notify components
         const currentCount = this.getTabCount()
         window.dispatchEvent(
@@ -34,13 +38,9 @@ export class TabTracker {
             detail: { count: currentCount },
           }),
         )
-      } else if (type === "request_count") {
-        // Another tab is requesting the current count
-        this.broadcastChannel.postMessage({
-          type: "count_response",
-          tabId: this.tabId,
-          count: this.getTabCount(),
-        })
+      } else if (type === "heartbeat") {
+        // Another tab is sending a heartbeat - update its timestamp
+        this.updateTabHeartbeat(event.data.tabId)
       }
     })
   }
@@ -48,22 +48,25 @@ export class TabTracker {
   init(): void {
     if (this.isInitialized) return
 
-    // Handle page refresh detection
-    this.handlePageRefresh()
+    // Register this tab
+    this.registerTab()
 
-    // Increment tab count
-    this.incrementTabCount()
+    // Start heartbeat
+    this.startHeartbeat()
 
-    // Set up beforeunload listener to decrement count when tab closes
+    // Clean up dead tabs periodically
+    this.startTabCleanup()
+
+    // Set up beforeunload listener
     window.addEventListener("beforeunload", () => {
-      this.decrementTabCount()
+      this.unregisterTab()
     })
 
-    // Set up visibility change listener for additional cleanup
+    // Set up visibility change listener
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") {
-        // Tab is being hidden, but not necessarily closed
-        // We rely on beforeunload for actual closing
+      if (document.visibilityState === "visible") {
+        // Tab became visible, ensure it's registered
+        this.registerTab()
       }
     })
 
@@ -71,81 +74,148 @@ export class TabTracker {
     console.log(`Tab ${this.tabId} initialized`)
   }
 
-  private incrementTabCount(): void {
-    const currentCount = this.getTabCount()
-    const newCount = currentCount + 1
-    localStorage.setItem(this.TAB_COUNT_KEY, newCount.toString())
+  private registerTab(): void {
+    const registry = this.getTabRegistry()
+    registry[this.tabId] = {
+      timestamp: Date.now(),
+      active: true,
+    }
+    localStorage.setItem(this.TAB_REGISTRY_KEY, JSON.stringify(registry))
+
+    this.updateTabCount()
 
     // Broadcast to other tabs
     this.broadcastChannel.postMessage({
       type: "tab_opened",
       tabId: this.tabId,
-      count: newCount,
+      count: this.getTabCount(),
     })
 
-    // Notify local components
-    window.dispatchEvent(
-      new CustomEvent("tabCountChange", {
-        detail: { count: newCount },
-      }),
-    )
-
-    console.log(`Tab count incremented to ${newCount}`)
+    console.log(`Tab ${this.tabId} registered`)
   }
 
-  private decrementTabCount(): void {
-    const currentCount = this.getTabCount()
-    const newCount = Math.max(0, currentCount - 1)
+  private unregisterTab(): void {
+    const registry = this.getTabRegistry()
+    delete registry[this.tabId]
+    localStorage.setItem(this.TAB_REGISTRY_KEY, JSON.stringify(registry))
 
-    // Only clear session if this is actually the last tab closing
-    // and not just a page refresh
-    if (newCount === 0) {
-      // Add a small delay to distinguish between refresh and actual close
-      setTimeout(() => {
-        const finalCount = this.getTabCount()
-        if (finalCount === 0) {
-          // Import SessionManager here to avoid circular dependency
-          const { SessionManager } = require("./session")
-          const sessionManager = SessionManager.getInstance()
-          sessionManager.clearSession()
-          console.log("Last tab closed - session cleared")
-        }
-      }, 100)
-    }
-
-    localStorage.setItem(this.TAB_COUNT_KEY, newCount.toString())
+    this.updateTabCount()
 
     // Broadcast to other tabs
     this.broadcastChannel.postMessage({
       type: "tab_closed",
       tabId: this.tabId,
-      count: newCount,
+      count: this.getTabCount(),
     })
 
-    console.log(`Tab count decremented to ${newCount}`)
+    console.log(`Tab ${this.tabId} unregistered`)
+  }
+
+  private startHeartbeat(): void {
+    this.heartbeatInterval = setInterval(() => {
+      // Update our own timestamp
+      const registry = this.getTabRegistry()
+      if (registry[this.tabId]) {
+        registry[this.tabId].timestamp = Date.now()
+        localStorage.setItem(this.TAB_REGISTRY_KEY, JSON.stringify(registry))
+      }
+
+      // Broadcast heartbeat to other tabs
+      this.broadcastChannel.postMessage({
+        type: "heartbeat",
+        tabId: this.tabId,
+        timestamp: Date.now(),
+      })
+    }, this.HEARTBEAT_INTERVAL)
+  }
+
+  private updateTabHeartbeat(tabId: string): void {
+    const registry = this.getTabRegistry()
+    if (registry[tabId]) {
+      registry[tabId].timestamp = Date.now()
+      localStorage.setItem(this.TAB_REGISTRY_KEY, JSON.stringify(registry))
+    }
+  }
+
+  private startTabCleanup(): void {
+    setInterval(() => {
+      this.cleanupDeadTabs()
+    }, this.HEARTBEAT_INTERVAL)
+  }
+
+  private cleanupDeadTabs(): void {
+    const registry = this.getTabRegistry()
+    const now = Date.now()
+    let hasChanges = false
+
+    Object.keys(registry).forEach((tabId) => {
+      if (now - registry[tabId].timestamp > this.TAB_TIMEOUT) {
+        delete registry[tabId]
+        hasChanges = true
+        console.log(`Cleaned up dead tab: ${tabId}`)
+      }
+    })
+
+    if (hasChanges) {
+      localStorage.setItem(this.TAB_REGISTRY_KEY, JSON.stringify(registry))
+      this.updateTabCount()
+
+      // Broadcast cleanup to other tabs
+      this.broadcastChannel.postMessage({
+        type: "tab_cleanup",
+        count: this.getTabCount(),
+      })
+
+      // Check if this was the last tab
+      const tabCount = this.getTabCount()
+      if (tabCount === 0) {
+        console.log("All tabs closed - clearing session")
+        // Import SessionManager here to avoid circular dependency
+        const { SessionManager } = require("./session")
+        const sessionManager = SessionManager.getInstance()
+        sessionManager.clearSession()
+
+        // Notify components
+        window.dispatchEvent(
+          new CustomEvent("tabCountChange", {
+            detail: { count: 0 },
+          }),
+        )
+      }
+    }
+  }
+
+  private getTabRegistry(): Record<string, { timestamp: number; active: boolean }> {
+    try {
+      const registry = localStorage.getItem(this.TAB_REGISTRY_KEY)
+      return registry ? JSON.parse(registry) : {}
+    } catch (error) {
+      console.error("Error reading tab registry:", error)
+      return {}
+    }
+  }
+
+  private updateTabCount(): void {
+    const registry = this.getTabRegistry()
+    const count = Object.keys(registry).length
+    localStorage.setItem(this.TAB_COUNT_KEY, count.toString())
   }
 
   getTabCount(): number {
     try {
-      const count = localStorage.getItem(this.TAB_COUNT_KEY)
-      return count ? Number.parseInt(count, 10) : 0
+      const registry = this.getTabRegistry()
+      return Object.keys(registry).length
     } catch (error) {
       console.error("Error reading tab count:", error)
       return 0
     }
   }
 
-  private handlePageRefresh(): void {
-    // Set a flag to indicate this tab is refreshing
-    sessionStorage.setItem(`tab_refreshing_${this.tabId}`, "true")
-
-    // Clear the flag after a short delay (after the new page loads)
-    setTimeout(() => {
-      sessionStorage.removeItem(`tab_refreshing_${this.tabId}`)
-    }, 1000)
-  }
-
   cleanup(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval)
+    }
+    this.unregisterTab()
     this.broadcastChannel.close()
   }
 }

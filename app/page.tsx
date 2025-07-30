@@ -45,23 +45,19 @@ export default function App() {
       const { count } = event.detail
       console.log(`Active tabs: ${count}`)
 
-      // Only clear session if count is 0 and we have a session
-      // This prevents clearing session on page refresh
-      if (count === 0 && sessionManager.getSession()) {
-        console.log("All tabs closed - clearing session")
-        sessionManager.clearSession()
+      // If count reaches 0, user will be logged out by the tab tracker
+      if (count === 0) {
         setIsAuthenticated(false)
         setUsername("")
+        console.log("All tabs closed - user logged out")
       }
     }
 
     window.addEventListener("sessionChange", handleSessionChange as EventListener)
     window.addEventListener("tabCountChange", handleTabCountChange as EventListener)
 
-    // Initialize tab tracking after a small delay to ensure proper setup
-    setTimeout(() => {
-      tabTracker.init()
-    }, 100)
+    // Initialize tab tracking
+    tabTracker.init()
 
     return () => {
       window.removeEventListener("sessionChange", handleSessionChange as EventListener)
