@@ -1,17 +1,13 @@
-import type { SessionManager } from "./session"
-
 export class TabTracker {
   private static instance: TabTracker
   private broadcastChannel: BroadcastChannel | null = null
   private readonly TAB_REGISTRY_KEY = "app_tab_registry"
-  private readonly LAST_ACTIVITY_KEY = "app_last_activity"
-  private readonly SESSION_TIMEOUT = 5000 // 5 seconds after last activity
   private readonly HEARTBEAT_INTERVAL = 1000 // 1 second
+  private readonly TAB_TIMEOUT = 3000 // 3 seconds
   private tabId: string
   private isInitialized = false
   private heartbeatInterval: NodeJS.Timeout | null = null
   private cleanupInterval: NodeJS.Timeout | null = null
-  private sessionManager: SessionManager | null = null
 
   private constructor() {
     this.tabId = this.generateTabId()
@@ -23,11 +19,6 @@ export class TabTracker {
       TabTracker.instance = new TabTracker()
     }
     return TabTracker.instance
-  }
-
-  // Method to inject the session manager dependency
-  setSessionManager(sessionManager: SessionManager): void {
-    this.sessionManager = sessionManager
   }
 
   private initializeBroadcastChannel(): void {
@@ -53,132 +44,66 @@ export class TabTracker {
     this.broadcastChannel.addEventListener("message", (event) => {
       const { type } = event.data
 
-      if (type === "tab_opened" || type === "tab_closed" || type === "heartbeat") {
-        // Update activity timestamp
-        this.updateLastActivity()
-
+      if (type === "heartbeat" || type === "tab_registered") {
         // Notify components of count change
         const currentCount = this.getTabCount()
-        window.dispatchEvent(
-          new CustomEvent("tabCountChange", {
-            detail: { count: currentCount },
-          }),
-        )
+        this.dispatchTabCountChange(currentCount)
       }
-    })
-
-    this.broadcastChannel.addEventListener("messageerror", (error) => {
-      console.error("BroadcastChannel message error:", error)
     })
   }
 
   private safeBroadcast(message: any): void {
     try {
-      if (this.broadcastChannel && this.broadcastChannel.readyState !== "closed") {
+      if (this.broadcastChannel) {
         this.broadcastChannel.postMessage(message)
-      } else {
-        // Try to reinitialize the channel
-        this.initializeBroadcastChannel()
-        if (this.broadcastChannel) {
-          this.broadcastChannel.postMessage(message)
-        }
       }
     } catch (error) {
       console.error("Failed to broadcast message:", error)
-      // Reinitialize channel on error
-      this.initializeBroadcastChannel()
     }
+  }
+
+  private dispatchTabCountChange(count: number): void {
+    window.dispatchEvent(
+      new CustomEvent("tabCountChange", {
+        detail: { count },
+      }),
+    )
   }
 
   init(): void {
     if (this.isInitialized) return
 
-    // Ensure broadcast channel is ready
-    if (!this.broadcastChannel) {
-      this.initializeBroadcastChannel()
-    }
-
-    // First, check if session should be cleared due to inactivity
-    this.checkSessionValidity()
+    console.log(`Initializing tab ${this.tabId}`)
 
     // Register this tab
     this.registerTab()
 
-    // Start heartbeat
+    // Start heartbeat immediately
     this.startHeartbeat()
 
     // Start cleanup process
     this.startCleanupProcess()
 
-    // Set up beforeunload listener
-    window.addEventListener("beforeunload", () => {
-      this.unregisterTab()
-    })
-
-    // Set up page hide listener (more reliable than beforeunload)
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") {
-        // Update activity when tab becomes hidden
-        this.updateLastActivity()
-      } else if (document.visibilityState === "visible") {
-        // Re-register when tab becomes visible
-        this.registerTab()
-      }
-    })
-
-    // Set up page hide event (fires when page is being unloaded)
-    window.addEventListener("pagehide", () => {
-      this.unregisterTab()
-    })
+    // Handle page unload events
+    this.setupUnloadHandlers()
 
     this.isInitialized = true
-    console.log(`Tab ${this.tabId} initialized`)
-  }
 
-  private checkSessionValidity(): void {
-    const lastActivity = this.getLastActivity()
-    const now = Date.now()
+    // Initial count dispatch
+    const initialCount = this.getTabCount()
+    this.dispatchTabCountChange(initialCount)
 
-    // If there's been no activity for longer than the timeout, clear session
-    if (lastActivity && now - lastActivity > this.SESSION_TIMEOUT) {
-      console.log("Session expired due to inactivity - clearing session")
-
-      // Clear the tab registry
-      localStorage.removeItem(this.TAB_REGISTRY_KEY)
-      localStorage.removeItem(this.LAST_ACTIVITY_KEY)
-
-      // Clear session if session manager is available
-      if (this.sessionManager) {
-        try {
-          this.sessionManager.clearSession()
-        } catch (error) {
-          console.error("Error clearing session:", error)
-        }
-      }
-
-      // Notify components
-      setTimeout(() => {
-        window.dispatchEvent(
-          new CustomEvent("sessionChange", {
-            detail: { type: "logout" },
-          }),
-        )
-      }, 100)
-    }
+    console.log(`Tab ${this.tabId} initialized with ${initialCount} total tabs`)
   }
 
   private registerTab(): void {
     const registry = this.getTabRegistry()
-    registry[this.tabId] = {
-      timestamp: Date.now(),
-      active: true,
-    }
-    localStorage.setItem(this.TAB_REGISTRY_KEY, JSON.stringify(registry))
-    this.updateLastActivity()
+    registry[this.tabId] = Date.now()
+    this.saveTabRegistry(registry)
 
     // Broadcast to other tabs
     this.safeBroadcast({
-      type: "tab_opened",
+      type: "tab_registered",
       tabId: this.tabId,
       timestamp: Date.now(),
     })
@@ -186,20 +111,25 @@ export class TabTracker {
     console.log(`Tab ${this.tabId} registered`)
   }
 
-  private unregisterTab(): void {
-    const registry = this.getTabRegistry()
-    delete registry[this.tabId]
-    localStorage.setItem(this.TAB_REGISTRY_KEY, JSON.stringify(registry))
-    this.updateLastActivity()
+  private setupUnloadHandlers(): void {
+    const unregister = () => {
+      console.log(`Unregistering tab ${this.tabId}`)
+      const registry = this.getTabRegistry()
+      delete registry[this.tabId]
+      this.saveTabRegistry(registry)
+    }
 
-    // Broadcast to other tabs
-    this.safeBroadcast({
-      type: "tab_closed",
-      tabId: this.tabId,
-      timestamp: Date.now(),
+    // Multiple event handlers for better coverage
+    window.addEventListener("beforeunload", unregister)
+    window.addEventListener("pagehide", unregister)
+
+    // Visibility change handler
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        // Don't unregister immediately, just update timestamp
+        this.updateHeartbeat()
+      }
     })
-
-    console.log(`Tab ${this.tabId} unregistered`)
   }
 
   private startHeartbeat(): void {
@@ -208,21 +138,23 @@ export class TabTracker {
     }
 
     this.heartbeatInterval = setInterval(() => {
-      // Update our own timestamp
-      const registry = this.getTabRegistry()
-      if (registry[this.tabId]) {
-        registry[this.tabId].timestamp = Date.now()
-        localStorage.setItem(this.TAB_REGISTRY_KEY, JSON.stringify(registry))
-        this.updateLastActivity()
-      }
+      this.updateHeartbeat()
+    }, this.HEARTBEAT_INTERVAL)
+  }
 
-      // Broadcast heartbeat to other tabs
+  private updateHeartbeat(): void {
+    const registry = this.getTabRegistry()
+    if (registry[this.tabId]) {
+      registry[this.tabId] = Date.now()
+      this.saveTabRegistry(registry)
+
+      // Broadcast heartbeat
       this.safeBroadcast({
         type: "heartbeat",
         tabId: this.tabId,
         timestamp: Date.now(),
       })
-    }, this.HEARTBEAT_INTERVAL)
+    }
   }
 
   private startCleanupProcess(): void {
@@ -242,7 +174,7 @@ export class TabTracker {
 
     // Remove tabs that haven't sent heartbeat in timeout period
     Object.keys(registry).forEach((tabId) => {
-      if (now - registry[tabId].timestamp > this.SESSION_TIMEOUT) {
+      if (now - registry[tabId] > this.TAB_TIMEOUT) {
         delete registry[tabId]
         hasChanges = true
         console.log(`Cleaned up dead tab: ${tabId}`)
@@ -250,64 +182,40 @@ export class TabTracker {
     })
 
     if (hasChanges) {
-      localStorage.setItem(this.TAB_REGISTRY_KEY, JSON.stringify(registry))
-
-      // Check if this was the last tab
+      this.saveTabRegistry(registry)
       const remainingTabs = Object.keys(registry).length
-      if (remainingTabs === 0) {
-        console.log("All tabs closed - clearing session")
-        this.clearSessionDueToNoTabs()
-      }
 
-      // Notify components
-      window.dispatchEvent(
-        new CustomEvent("tabCountChange", {
-          detail: { count: remainingTabs },
-        }),
-      )
+      console.log(`After cleanup: ${remainingTabs} tabs remaining`)
+
+      // Dispatch count change
+      this.dispatchTabCountChange(remainingTabs)
+
+      // If no tabs remain, clear session
+      if (remainingTabs === 0) {
+        console.log("🚨 ALL TABS CLOSED - CLEARING SESSION")
+        this.clearSession()
+      }
     }
   }
 
-  private clearSessionDueToNoTabs(): void {
-    // Clear last activity
-    localStorage.removeItem(this.LAST_ACTIVITY_KEY)
+  private clearSession(): void {
+    // Clear the registry
+    localStorage.removeItem(this.TAB_REGISTRY_KEY)
 
-    // Clear session if session manager is available
-    if (this.sessionManager) {
-      try {
-        this.sessionManager.clearSession()
-      } catch (error) {
-        console.error("Error clearing session:", error)
-      }
-    }
+    // Clear session from localStorage
+    localStorage.removeItem("app_session")
 
-    // Notify components
+    // Notify the app
     window.dispatchEvent(
       new CustomEvent("sessionChange", {
         detail: { type: "logout" },
       }),
     )
+
+    console.log("Session cleared due to no active tabs")
   }
 
-  private updateLastActivity(): void {
-    try {
-      localStorage.setItem(this.LAST_ACTIVITY_KEY, Date.now().toString())
-    } catch (error) {
-      console.error("Error updating last activity:", error)
-    }
-  }
-
-  private getLastActivity(): number | null {
-    try {
-      const activity = localStorage.getItem(this.LAST_ACTIVITY_KEY)
-      return activity ? Number.parseInt(activity, 10) : null
-    } catch (error) {
-      console.error("Error reading last activity:", error)
-      return null
-    }
-  }
-
-  private getTabRegistry(): Record<string, { timestamp: number; active: boolean }> {
+  private getTabRegistry(): Record<string, number> {
     try {
       const registry = localStorage.getItem(this.TAB_REGISTRY_KEY)
       return registry ? JSON.parse(registry) : {}
@@ -317,13 +225,21 @@ export class TabTracker {
     }
   }
 
+  private saveTabRegistry(registry: Record<string, number>): void {
+    try {
+      localStorage.setItem(this.TAB_REGISTRY_KEY, JSON.stringify(registry))
+    } catch (error) {
+      console.error("Error saving tab registry:", error)
+    }
+  }
+
   getTabCount(): number {
     try {
       const registry = this.getTabRegistry()
       const now = Date.now()
 
       // Only count tabs that are still active (within timeout period)
-      const activeTabs = Object.values(registry).filter((tab) => now - tab.timestamp <= this.SESSION_TIMEOUT)
+      const activeTabs = Object.values(registry).filter((timestamp) => now - timestamp <= this.TAB_TIMEOUT)
 
       return activeTabs.length
     } catch (error) {
@@ -333,6 +249,8 @@ export class TabTracker {
   }
 
   cleanup(): void {
+    console.log(`Cleaning up tab ${this.tabId}`)
+
     this.isInitialized = false
 
     if (this.heartbeatInterval) {
@@ -345,7 +263,10 @@ export class TabTracker {
       this.cleanupInterval = null
     }
 
-    this.unregisterTab()
+    // Remove this tab from registry
+    const registry = this.getTabRegistry()
+    delete registry[this.tabId]
+    this.saveTabRegistry(registry)
 
     if (this.broadcastChannel) {
       try {
