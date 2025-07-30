@@ -21,6 +21,7 @@ export default function App() {
     if (existingSession) {
       setIsAuthenticated(true)
       setUsername(existingSession.username)
+      console.log("Session restored from localStorage")
     }
     setIsLoading(false)
 
@@ -31,9 +32,11 @@ export default function App() {
       if (type === "login") {
         setIsAuthenticated(true)
         setUsername(session.username)
+        console.log("Session synced from another tab - login")
       } else if (type === "logout") {
         setIsAuthenticated(false)
         setUsername("")
+        console.log("Session synced from another tab - logout")
       }
     }
 
@@ -42,8 +45,10 @@ export default function App() {
       const { count } = event.detail
       console.log(`Active tabs: ${count}`)
 
-      // If this is the last tab closing, clear session
-      if (count === 0) {
+      // Only clear session if count is 0 and we have a session
+      // This prevents clearing session on page refresh
+      if (count === 0 && sessionManager.getSession()) {
+        console.log("All tabs closed - clearing session")
         sessionManager.clearSession()
         setIsAuthenticated(false)
         setUsername("")
@@ -53,8 +58,10 @@ export default function App() {
     window.addEventListener("sessionChange", handleSessionChange as EventListener)
     window.addEventListener("tabCountChange", handleTabCountChange as EventListener)
 
-    // Initialize tab tracking
-    tabTracker.init()
+    // Initialize tab tracking after a small delay to ensure proper setup
+    setTimeout(() => {
+      tabTracker.init()
+    }, 100)
 
     return () => {
       window.removeEventListener("sessionChange", handleSessionChange as EventListener)

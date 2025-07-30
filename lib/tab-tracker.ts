@@ -48,6 +48,9 @@ export class TabTracker {
   init(): void {
     if (this.isInitialized) return
 
+    // Handle page refresh detection
+    this.handlePageRefresh()
+
     // Increment tab count
     this.incrementTabCount()
 
@@ -93,6 +96,23 @@ export class TabTracker {
   private decrementTabCount(): void {
     const currentCount = this.getTabCount()
     const newCount = Math.max(0, currentCount - 1)
+
+    // Only clear session if this is actually the last tab closing
+    // and not just a page refresh
+    if (newCount === 0) {
+      // Add a small delay to distinguish between refresh and actual close
+      setTimeout(() => {
+        const finalCount = this.getTabCount()
+        if (finalCount === 0) {
+          // Import SessionManager here to avoid circular dependency
+          const { SessionManager } = require("./session")
+          const sessionManager = SessionManager.getInstance()
+          sessionManager.clearSession()
+          console.log("Last tab closed - session cleared")
+        }
+      }, 100)
+    }
+
     localStorage.setItem(this.TAB_COUNT_KEY, newCount.toString())
 
     // Broadcast to other tabs
@@ -101,14 +121,6 @@ export class TabTracker {
       tabId: this.tabId,
       count: newCount,
     })
-
-    // If this was the last tab, clear the session
-    if (newCount === 0) {
-      // Import SessionManager here to avoid circular dependency
-      const { SessionManager } = require("./session")
-      const sessionManager = SessionManager.getInstance()
-      sessionManager.clearSession()
-    }
 
     console.log(`Tab count decremented to ${newCount}`)
   }
@@ -121,6 +133,16 @@ export class TabTracker {
       console.error("Error reading tab count:", error)
       return 0
     }
+  }
+
+  private handlePageRefresh(): void {
+    // Set a flag to indicate this tab is refreshing
+    sessionStorage.setItem(`tab_refreshing_${this.tabId}`, "true")
+
+    // Clear the flag after a short delay (after the new page loads)
+    setTimeout(() => {
+      sessionStorage.removeItem(`tab_refreshing_${this.tabId}`)
+    }, 1000)
   }
 
   cleanup(): void {
