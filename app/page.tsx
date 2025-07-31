@@ -12,84 +12,65 @@ export default function App() {
   const [username, setUsername] = useState("")
 
   useEffect(() => {
-    console.log("🚀 App initializing...")
+    console.log("🚀 App starting...")
 
-    // Initialize session manager and tab tracker
     const sessionManager = SessionManager.getInstance()
     const tabTracker = TabTracker.getInstance()
 
-    // Check for existing session first
+    // FIRST: Check if session exists
     const existingSession = sessionManager.getSession()
+    console.log("Session check:", existingSession ? "Found" : "None")
+
     if (existingSession) {
       setIsAuthenticated(true)
       setUsername(existingSession.username)
-      console.log("✅ Session restored from localStorage")
     }
 
-    // Initialize tab tracking
+    // THEN: Initialize tab tracking
     tabTracker.init()
     setIsLoading(false)
 
     // Listen for session changes from other tabs
     const handleSessionChange = (event: CustomEvent) => {
       const { type, session } = event.detail
-      console.log("📡 Session change received:", type)
 
       if (type === "login") {
         setIsAuthenticated(true)
         setUsername(session.username)
-        console.log("✅ Session synced from another tab - login")
+        console.log("✅ Login from another tab")
       } else if (type === "logout") {
         setIsAuthenticated(false)
         setUsername("")
-        console.log("❌ Session synced from another tab - logout")
-      }
-    }
-
-    // Listen for tab count changes
-    const handleTabCountChange = (event: CustomEvent) => {
-      const { count } = event.detail
-      console.log(`📊 Active tabs: ${count}`)
-
-      // If count reaches 0 and we're authenticated, log out
-      if (count === 0 && isAuthenticated) {
-        console.log("🚨 All tabs closed - logging out user")
-        setIsAuthenticated(false)
-        setUsername("")
+        console.log("❌ Logout from another tab")
       }
     }
 
     window.addEventListener("sessionChange", handleSessionChange as EventListener)
-    window.addEventListener("tabCountChange", handleTabCountChange as EventListener)
 
     return () => {
-      console.log("🧹 App cleanup")
       window.removeEventListener("sessionChange", handleSessionChange as EventListener)
-      window.removeEventListener("tabCountChange", handleTabCountChange as EventListener)
       tabTracker.cleanup()
     }
-  }, [isAuthenticated])
+  }, [])
 
   const handleLogin = (loginUsername: string, password: string) => {
-    // Simple authentication check (in real app, this would be server-side)
     if (loginUsername === "admin" && password === "password") {
       const sessionManager = SessionManager.getInstance()
       sessionManager.createSession(loginUsername)
       setIsAuthenticated(true)
       setUsername(loginUsername)
-      console.log("✅ User logged in successfully")
+      console.log("✅ Login successful")
       return true
     }
-    console.log("❌ Login failed")
     return false
   }
 
   const handleLogout = () => {
-    console.log("👋 User manually logged out")
     const sessionManager = SessionManager.getInstance()
     sessionManager.clearSession()
     setIsAuthenticated(false)
     setUsername("")
+    console.log("👋 Manual logout")
   }
 
   if (isLoading) {
