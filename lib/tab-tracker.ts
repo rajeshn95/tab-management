@@ -1,13 +1,13 @@
 export class TabTracker {
   private static instance: TabTracker
   private broadcastChannel: BroadcastChannel
-  private readonly TAB_REGISTRY_KEY = "app_tab_registry"
   private readonly TAB_COUNT_KEY = "active_tabs"
   private readonly HEARTBEAT_INTERVAL = 2000 // 2 seconds
-  private readonly TAB_TIMEOUT = 3000 // 3 seconds
+  private readonly SESSION_CLEAR_DELAY = 2000 // 2 seconds delay before clearing session
   private tabId: string
   private isInitialized = false
   private heartbeatInterval: NodeJS.Timeout | null = null
+  private sessionClearTimeout: NodeJS.Timeout | null = null
 
   private constructor() {
     this.tabId = `tab_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`
@@ -26,6 +26,9 @@ export class TabTracker {
     this.broadcastChannel.addEventListener("message", (event) => {
       if (event.data.type === "tab_update") {
         this.updateTabCount()
+      } else if (event.data.type === "tab_registered") {
+        // Cancel session clearing if a new tab registers
+        this.cancelSessionClear()
       }
     })
   }
@@ -34,6 +37,9 @@ export class TabTracker {
     if (this.isInitialized) return
 
     console.log("🚀 Tab tracker init")
+
+    // Cancel any pending session clear (in case of refresh)
+    this.cancelSessionClear()
 
     // Add this tab to the count
     this.addTab()
@@ -59,6 +65,8 @@ export class TabTracker {
     tabs[this.tabId] = Date.now()
     localStorage.setItem(this.TAB_COUNT_KEY, JSON.stringify(tabs))
 
+    // Broadcast that a new tab registered
+    this.broadcastChannel.postMessage({ type: "tab_registered", tabId: this.tabId })
     this.broadcastTabUpdate()
     this.updateTabCount()
 
@@ -74,12 +82,38 @@ export class TabTracker {
 
     // Check if this was the last tab
     if (Object.keys(tabs).length === 0) {
-      console.log("🚨 LAST TAB CLOSED - CLEARING SESSION")
-      localStorage.removeItem("app_session")
-      localStorage.removeItem(this.TAB_COUNT_KEY)
+      console.log("⏳ Last tab removed - scheduling session clear...")
+      this.scheduleSessionClear()
     }
 
     this.broadcastTabUpdate()
+  }
+
+  private scheduleSessionClear(): void {
+    // Clear any existing timeout
+    this.cancelSessionClear()
+
+    // Schedule session clearing after delay
+    this.sessionClearTimeout = setTimeout(() => {
+      console.log("🚨 CLEARING SESSION - No tabs registered within delay period")
+      localStorage.removeItem("app_session")
+      localStorage.removeItem(this.TAB_COUNT_KEY)
+
+      // Notify other potential tabs
+      window.dispatchEvent(
+        new CustomEvent("sessionChange", {
+          detail: { type: "logout" },
+        }),
+      )
+    }, this.SESSION_CLEAR_DELAY)
+  }
+
+  private cancelSessionClear(): void {
+    if (this.sessionClearTimeout) {
+      console.log("✅ Session clear cancelled - new tab registered")
+      clearTimeout(this.sessionClearTimeout)
+      this.sessionClearTimeout = null
+    }
   }
 
   private startHeartbeat(): void {
@@ -126,6 +160,10 @@ export class TabTracker {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval)
     }
+
+    // Cancel any pending session clear
+    this.cancelSessionClear()
+
     this.removeTab()
     this.broadcastChannel.close()
   }
