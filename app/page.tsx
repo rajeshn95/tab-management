@@ -17,16 +17,27 @@ export default function App() {
     const sessionManager = SessionManager.getInstance()
     const tabTracker = TabTracker.getInstance()
 
-    // FIRST: Check if session exists
+    // STEP 1: Check if session exists
     const existingSession = sessionManager.getSession()
     console.log("Session check:", existingSession ? "Found" : "None")
 
     if (existingSession) {
-      setIsAuthenticated(true)
-      setUsername(existingSession.username)
+      // STEP 2: Validate session based on last activity
+      const isValid = tabTracker.isSessionValid()
+
+      if (isValid) {
+        console.log("✅ Session is valid - user stays logged in")
+        setIsAuthenticated(true)
+        setUsername(existingSession.username)
+      } else {
+        console.log("❌ Session expired - clearing session")
+        sessionManager.clearSession()
+        setIsAuthenticated(false)
+        setUsername("")
+      }
     }
 
-    // THEN: Initialize tab tracking
+    // STEP 3: Initialize tab tracking
     tabTracker.init()
     setIsLoading(false)
 

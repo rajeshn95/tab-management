@@ -2,8 +2,9 @@ export class TabTracker {
   private static instance: TabTracker
   private broadcastChannel: BroadcastChannel
   private readonly TAB_COUNT_KEY = "active_tabs"
+  private readonly LAST_ACTIVITY_KEY = "last_activity"
   private readonly HEARTBEAT_INTERVAL = 2000 // 2 seconds
-  private readonly SESSION_CLEAR_DELAY = 2000 // 2 seconds delay before clearing session
+  private readonly SESSION_TIMEOUT = 5000 // 5 seconds - if gap > this, clear session
   private tabId: string
   private isInitialized = false
   private heartbeatInterval: NodeJS.Timeout | null = null
@@ -33,6 +34,39 @@ export class TabTracker {
     })
   }
 
+  // NEW: Check if session is valid based on last activity
+  isSessionValid(): boolean {
+    try {
+      const lastActivity = localStorage.getItem(this.LAST_ACTIVITY_KEY)
+      if (!lastActivity) {
+        console.log("❌ No last activity found")
+        return false
+      }
+
+      const lastActivityTime = Number.parseInt(lastActivity)
+      const currentTime = Date.now()
+      const timeSinceLastActivity = currentTime - lastActivityTime
+
+      console.log(`⏰ Time since last activity: ${timeSinceLastActivity}ms`)
+
+      if (timeSinceLastActivity > this.SESSION_TIMEOUT) {
+        console.log("❌ Session expired - too much time passed")
+        return false
+      }
+
+      console.log("✅ Session valid - recent activity detected")
+      return true
+    } catch (error) {
+      console.error("Error checking session validity:", error)
+      return false
+    }
+  }
+
+  // NEW: Update last activity timestamp
+  private updateLastActivity(): void {
+    localStorage.setItem(this.LAST_ACTIVITY_KEY, Date.now().toString())
+  }
+
   init(): void {
     if (this.isInitialized) return
 
@@ -40,6 +74,9 @@ export class TabTracker {
 
     // Cancel any pending session clear (in case of refresh)
     this.cancelSessionClear()
+
+    // Update activity timestamp
+    this.updateLastActivity()
 
     // Add this tab to the count
     this.addTab()
@@ -64,6 +101,9 @@ export class TabTracker {
     const tabs = this.getActiveTabs()
     tabs[this.tabId] = Date.now()
     localStorage.setItem(this.TAB_COUNT_KEY, JSON.stringify(tabs))
+
+    // Update last activity
+    this.updateLastActivity()
 
     // Broadcast that a new tab registered
     this.broadcastChannel.postMessage({ type: "tab_registered", tabId: this.tabId })
@@ -122,6 +162,9 @@ export class TabTracker {
       if (tabs[this.tabId]) {
         tabs[this.tabId] = Date.now()
         localStorage.setItem(this.TAB_COUNT_KEY, JSON.stringify(tabs))
+
+        // Update last activity on each heartbeat
+        this.updateLastActivity()
       }
     }, this.HEARTBEAT_INTERVAL)
   }
