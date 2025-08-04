@@ -38,10 +38,18 @@ export class TabTracker {
     })
   }
 
-  init(): void {
-    if (this.isInitialized) return
+  // NEW: Check if this is the first tab before initializing
+  init(): boolean {
+    if (this.isInitialized) return false
 
     console.log("🚀 Tab tracker initializing...")
+
+    // Check if this is the first tab (no existing tabs)
+    const existingTabs = this.getActiveTabs()
+    const isFirstTab = Object.keys(existingTabs).length === 0
+
+    console.log(`📊 Existing tabs: ${Object.keys(existingTabs).length}`)
+    console.log(`🆕 Is first tab: ${isFirstTab}`)
 
     // Register this tab
     this.registerTab()
@@ -66,6 +74,8 @@ export class TabTracker {
 
     this.isInitialized = true
     console.log(`✅ Tab tracker initialized: ${this.tabId}`)
+
+    return isFirstTab
   }
 
   private registerTab(): void {
@@ -98,6 +108,7 @@ export class TabTracker {
       if (Object.keys(tabs).length === 0) {
         // No more tabs - remove the cookie
         CookieManager.remove(this.TAB_COUNT_COOKIE, { path: "/" })
+        console.log("🏁 Last tab closed - removed tab cookie")
       } else {
         // Update cookie with remaining tabs
         const expirationTime = new Date(Date.now() + this.TAB_COOKIE_DURATION)

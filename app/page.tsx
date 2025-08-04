@@ -17,8 +17,11 @@ export default function App() {
     const sessionManager = SessionManager.getInstance()
     const tabTracker = TabTracker.getInstance()
 
-    // Initialize session with validation
-    const hasValidSession = sessionManager.initializeSession()
+    // Initialize tab tracking and check if this is the first tab
+    const isFirstTab = tabTracker.init()
+
+    // Initialize session - if first tab, always force login
+    const hasValidSession = sessionManager.initializeSession(isFirstTab)
 
     if (hasValidSession) {
       const session = sessionManager.getSession()
@@ -27,10 +30,10 @@ export default function App() {
         setUsername(session.username)
         console.log("✅ Valid session found - user logged in")
       }
+    } else {
+      console.log("🔑 No valid session - showing login")
     }
 
-    // Initialize tab tracking
-    tabTracker.init()
     setIsLoading(false)
 
     // Listen for session changes from other tabs

@@ -220,10 +220,18 @@ export class SessionManager {
     }
   }
 
-  // Check session validity on app startup
-  initializeSession(): boolean {
-    console.log("🔍 Initializing session...")
+  // NEW: Check if this is the first tab opening
+  initializeSession(isFirstTab: boolean): boolean {
+    console.log(`🔍 Initializing session... (First tab: ${isFirstTab})`)
 
+    // If this is the first tab, always clear session and force login
+    if (isFirstTab) {
+      console.log("🆕 First tab detected - clearing any existing session")
+      this.clearSession()
+      return false
+    }
+
+    // Not first tab - check for existing valid session
     const session = this.getSession()
     if (!session) {
       console.log("❌ No existing session")
