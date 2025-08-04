@@ -12,6 +12,7 @@ export class TabTracker {
   private readonly CLEANUP_INTERVAL = 10000 // Clean up dead tabs every 10 seconds
   private readonly TAB_TIMEOUT = 15000 // Consider tab dead after 15 seconds
   private readonly TAB_COOKIE_DURATION = 60 * 60 * 1000 // 1 hour
+  private readonly REFRESH_DETECTION_KEY = "tab_refresh_detection"
   private tabId: string
   private isInitialized = false
   private heartbeatInterval: NodeJS.Timeout | null = null
@@ -38,18 +39,58 @@ export class TabTracker {
     })
   }
 
-  // NEW: Check if this is the first tab before initializing
+  private isRefreshScenario(): boolean {
+    try {
+      // Check if this tab was previously initialized (sessionStorage persists during refresh)
+      const wasInitialized = sessionStorage.getItem(this.REFRESH_DETECTION_KEY)
+
+      if (wasInitialized) {
+        console.log("🔄 Refresh detected - tab was previously initialized")
+        return true
+      }
+
+      // Also check if there's a very recent session (within last 10 seconds)
+      // This catches cases where sessionStorage might not work
+      const session = CookieManager.getJSON<any>("app_session")
+      if (session && session.loginTime) {
+        const sessionAge = Date.now() - session.loginTime
+        const isVeryRecent = sessionAge < 10000 // 10 seconds
+
+        if (isVeryRecent) {
+          console.log(`🔄 Very recent session detected (${sessionAge}ms ago) - likely a refresh`)
+          return true
+        }
+      }
+
+      return false
+    } catch (error) {
+      console.error("Error checking refresh scenario:", error)
+      return false
+    }
+  }
+
+  // Check if this is truly the first tab (not a refresh)
   init(): boolean {
     if (this.isInitialized) return false
 
     console.log("🚀 Tab tracker initializing...")
 
-    // Check if this is the first tab (no existing tabs)
+    // Mark this tab as initialized in sessionStorage (survives refresh)
+    sessionStorage.setItem(this.REFRESH_DETECTION_KEY, "true")
+
+    // Check if this is a refresh scenario
+    const isRefresh = this.isRefreshScenario()
+
+    // Check existing tabs
     const existingTabs = this.getActiveTabs()
-    const isFirstTab = Object.keys(existingTabs).length === 0
+    const hasExistingTabs = Object.keys(existingTabs).length > 0
+
+    // Determine if this is truly the first tab
+    const isTrueFirstTab = !hasExistingTabs && !isRefresh
 
     console.log(`📊 Existing tabs: ${Object.keys(existingTabs).length}`)
-    console.log(`🆕 Is first tab: ${isFirstTab}`)
+    console.log(`🔄 Is refresh: ${isRefresh}`)
+    console.log(`🆕 Is true first tab: ${isTrueFirstTab}`)
 
     // Register this tab
     this.registerTab()
@@ -75,7 +116,7 @@ export class TabTracker {
     this.isInitialized = true
     console.log(`✅ Tab tracker initialized: ${this.tabId}`)
 
-    return isFirstTab
+    return isTrueFirstTab
   }
 
   private registerTab(): void {
