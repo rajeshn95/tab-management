@@ -1,17 +1,24 @@
+import { CookieManager } from "./cookie-utils"
+
+interface TabData {
+  timestamp: number
+  lastSeen: number
+}
+
 export class TabTracker {
   private static instance: TabTracker
   private broadcastChannel: BroadcastChannel
-  private readonly TAB_COUNT_KEY = "active_tabs"
-  private readonly LAST_ACTIVITY_KEY = "last_activity"
-  private readonly HEARTBEAT_INTERVAL = 2000 // 2 seconds
-  private readonly SESSION_TIMEOUT = 5000 // 5 seconds - if gap > this, clear session
+  private readonly TAB_COUNT_COOKIE = "active_tabs"
+  private readonly CLEANUP_INTERVAL = 10000 // Clean up dead tabs every 10 seconds
+  private readonly TAB_TIMEOUT = 15000 // Consider tab dead after 15 seconds
+  private readonly TAB_COOKIE_DURATION = 60 * 60 * 1000 // 1 hour
   private tabId: string
   private isInitialized = false
   private heartbeatInterval: NodeJS.Timeout | null = null
-  private sessionClearTimeout: NodeJS.Timeout | null = null
+  private cleanupInterval: NodeJS.Timeout | null = null
 
   private constructor() {
-    this.tabId = `tab_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`
+    this.tabId = `tab_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     this.broadcastChannel = new BroadcastChannel("tab_sync")
     this.setupListener()
   }
@@ -27,155 +34,150 @@ export class TabTracker {
     this.broadcastChannel.addEventListener("message", (event) => {
       if (event.data.type === "tab_update") {
         this.updateTabCount()
-      } else if (event.data.type === "tab_registered") {
-        // Cancel session clearing if a new tab registers
-        this.cancelSessionClear()
       }
     })
-  }
-
-  // NEW: Check if session is valid based on last activity
-  isSessionValid(): boolean {
-    try {
-      const lastActivity = localStorage.getItem(this.LAST_ACTIVITY_KEY)
-      if (!lastActivity) {
-        console.log("❌ No last activity found")
-        return false
-      }
-
-      const lastActivityTime = Number.parseInt(lastActivity)
-      const currentTime = Date.now()
-      const timeSinceLastActivity = currentTime - lastActivityTime
-
-      console.log(`⏰ Time since last activity: ${timeSinceLastActivity}ms`)
-
-      if (timeSinceLastActivity > this.SESSION_TIMEOUT) {
-        console.log("❌ Session expired - too much time passed")
-        return false
-      }
-
-      console.log("✅ Session valid - recent activity detected")
-      return true
-    } catch (error) {
-      console.error("Error checking session validity:", error)
-      return false
-    }
-  }
-
-  // NEW: Update last activity timestamp
-  private updateLastActivity(): void {
-    localStorage.setItem(this.LAST_ACTIVITY_KEY, Date.now().toString())
   }
 
   init(): void {
     if (this.isInitialized) return
 
-    console.log("🚀 Tab tracker init")
+    console.log("🚀 Tab tracker initializing...")
 
-    // Cancel any pending session clear (in case of refresh)
-    this.cancelSessionClear()
-
-    // Update activity timestamp
-    this.updateLastActivity()
-
-    // Add this tab to the count
-    this.addTab()
+    // Register this tab
+    this.registerTab()
 
     // Start heartbeat
     this.startHeartbeat()
 
+    // Start cleanup process
+    this.startCleanup()
+
     // Handle tab closing
-    window.addEventListener("beforeunload", () => this.removeTab())
-    window.addEventListener("pagehide", () => this.removeTab())
+    window.addEventListener("beforeunload", () => this.unregisterTab())
+    window.addEventListener("pagehide", () => this.unregisterTab())
+
+    // Handle page visibility changes
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        // Tab became visible - refresh registration
+        this.registerTab()
+      }
+    })
 
     this.isInitialized = true
-
-    // Initial count dispatch
-    const initialCount = this.getTabCount()
-    this.dispatchTabCountChange(initialCount)
-
-    console.log(`Tab ${this.tabId} initialized with ${initialCount} total tabs`)
+    console.log(`✅ Tab tracker initialized: ${this.tabId}`)
   }
 
-  private addTab(): void {
+  private registerTab(): void {
     const tabs = this.getActiveTabs()
-    tabs[this.tabId] = Date.now()
-    localStorage.setItem(this.TAB_COUNT_KEY, JSON.stringify(tabs))
-
-    // Update last activity
-    this.updateLastActivity()
-
-    // Broadcast that a new tab registered
-    this.broadcastChannel.postMessage({ type: "tab_registered", tabId: this.tabId })
-    this.broadcastTabUpdate()
-    this.updateTabCount()
-
-    console.log(`✅ Tab added: ${this.tabId}`)
-  }
-
-  private removeTab(): void {
-    const tabs = this.getActiveTabs()
-    delete tabs[this.tabId]
-    localStorage.setItem(this.TAB_COUNT_KEY, JSON.stringify(tabs))
-
-    console.log(`❌ Tab removed: ${this.tabId}`)
-
-    // Check if this was the last tab
-    if (Object.keys(tabs).length === 0) {
-      console.log("⏳ Last tab removed - scheduling session clear...")
-      this.scheduleSessionClear()
+    tabs[this.tabId] = {
+      timestamp: Date.now(),
+      lastSeen: Date.now(),
     }
 
-    this.broadcastTabUpdate()
+    try {
+      const expirationTime = new Date(Date.now() + this.TAB_COOKIE_DURATION)
+      CookieManager.setJSON(this.TAB_COUNT_COOKIE, tabs, {
+        expires: expirationTime,
+        path: "/",
+        sameSite: "lax",
+      })
+
+      this.broadcastTabUpdate()
+      console.log(`📝 Tab registered: ${this.tabId}`)
+    } catch (error) {
+      console.error("Failed to register tab:", error)
+    }
   }
 
-  private scheduleSessionClear(): void {
-    // Clear any existing timeout
-    this.cancelSessionClear()
+  private unregisterTab(): void {
+    const tabs = this.getActiveTabs()
+    delete tabs[this.tabId]
 
-    // Schedule session clearing after delay
-    this.sessionClearTimeout = setTimeout(() => {
-      console.log("🚨 CLEARING SESSION - No tabs registered within delay period")
-      localStorage.removeItem("app_session")
-      localStorage.removeItem(this.TAB_COUNT_KEY)
+    try {
+      if (Object.keys(tabs).length === 0) {
+        // No more tabs - remove the cookie
+        CookieManager.remove(this.TAB_COUNT_COOKIE, { path: "/" })
+      } else {
+        // Update cookie with remaining tabs
+        const expirationTime = new Date(Date.now() + this.TAB_COOKIE_DURATION)
+        CookieManager.setJSON(this.TAB_COUNT_COOKIE, tabs, {
+          expires: expirationTime,
+          path: "/",
+          sameSite: "lax",
+        })
+      }
 
-      // Notify other potential tabs
-      window.dispatchEvent(
-        new CustomEvent("sessionChange", {
-          detail: { type: "logout" },
-        }),
-      )
-    }, this.SESSION_CLEAR_DELAY)
-  }
-
-  private cancelSessionClear(): void {
-    if (this.sessionClearTimeout) {
-      console.log("✅ Session clear cancelled - new tab registered")
-      clearTimeout(this.sessionClearTimeout)
-      this.sessionClearTimeout = null
+      this.broadcastTabUpdate()
+      console.log(`🗑️ Tab unregistered: ${this.tabId}`)
+    } catch (error) {
+      console.error("Failed to unregister tab:", error)
     }
   }
 
   private startHeartbeat(): void {
     this.heartbeatInterval = setInterval(() => {
-      const tabs = this.getActiveTabs()
-      if (tabs[this.tabId]) {
-        tabs[this.tabId] = Date.now()
-        localStorage.setItem(this.TAB_COUNT_KEY, JSON.stringify(tabs))
-
-        // Update last activity on each heartbeat
-        this.updateLastActivity()
-      }
-    }, this.HEARTBEAT_INTERVAL)
+      this.updateTabHeartbeat()
+    }, 3000) // Every 3 seconds
   }
 
-  private getActiveTabs(): Record<string, number> {
-    try {
-      const tabs = localStorage.getItem(this.TAB_COUNT_KEY)
-      return tabs ? JSON.parse(tabs) : {}
-    } catch {
-      return {}
+  private updateTabHeartbeat(): void {
+    const tabs = this.getActiveTabs()
+    if (tabs[this.tabId]) {
+      tabs[this.tabId].lastSeen = Date.now()
+      try {
+        const expirationTime = new Date(Date.now() + this.TAB_COOKIE_DURATION)
+        CookieManager.setJSON(this.TAB_COUNT_COOKIE, tabs, {
+          expires: expirationTime,
+          path: "/",
+          sameSite: "lax",
+        })
+      } catch (error) {
+        console.error("Failed to update tab heartbeat:", error)
+      }
     }
+  }
+
+  private startCleanup(): void {
+    this.cleanupInterval = setInterval(() => {
+      this.cleanupDeadTabs()
+    }, this.CLEANUP_INTERVAL)
+  }
+
+  private cleanupDeadTabs(): void {
+    const tabs = this.getActiveTabs()
+    const currentTime = Date.now()
+    let hasChanges = false
+
+    for (const [tabId, tabData] of Object.entries(tabs)) {
+      if (currentTime - tabData.lastSeen > this.TAB_TIMEOUT) {
+        delete tabs[tabId]
+        hasChanges = true
+        console.log(`🧹 Cleaned up dead tab: ${tabId}`)
+      }
+    }
+
+    if (hasChanges) {
+      try {
+        if (Object.keys(tabs).length === 0) {
+          CookieManager.remove(this.TAB_COUNT_COOKIE, { path: "/" })
+        } else {
+          const expirationTime = new Date(Date.now() + this.TAB_COOKIE_DURATION)
+          CookieManager.setJSON(this.TAB_COUNT_COOKIE, tabs, {
+            expires: expirationTime,
+            path: "/",
+            sameSite: "lax",
+          })
+        }
+        this.broadcastTabUpdate()
+      } catch (error) {
+        console.error("Failed to cleanup dead tabs:", error)
+      }
+    }
+  }
+
+  private getActiveTabs(): Record<string, TabData> {
+    return CookieManager.getJSON<Record<string, TabData>>(this.TAB_COUNT_COOKIE) || {}
   }
 
   private broadcastTabUpdate(): void {
@@ -196,7 +198,7 @@ export class TabTracker {
   }
 
   cleanup(): void {
-    console.log(`Cleaning up tab ${this.tabId}`)
+    console.log("🧹 Cleaning up tab tracker")
 
     this.isInitialized = false
 
@@ -204,18 +206,11 @@ export class TabTracker {
       clearInterval(this.heartbeatInterval)
     }
 
-    // Cancel any pending session clear
-    this.cancelSessionClear()
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval)
+    }
 
-    this.removeTab()
+    this.unregisterTab()
     this.broadcastChannel.close()
-  }
-
-  private dispatchTabCountChange(count: number): void {
-    window.dispatchEvent(
-      new CustomEvent("tabCountChange", {
-        detail: { count },
-      }),
-    )
   }
 }

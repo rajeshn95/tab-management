@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import LoginForm from "@/components/login-form"
 import Dashboard from "@/components/dashboard"
-import { SessionManager } from "@/lib/session"
+import { SessionManager } from "@/lib/session-manager"
 import { TabTracker } from "@/lib/tab-tracker"
 
 export default function App() {
@@ -17,27 +17,19 @@ export default function App() {
     const sessionManager = SessionManager.getInstance()
     const tabTracker = TabTracker.getInstance()
 
-    // STEP 1: Check if session exists
-    const existingSession = sessionManager.getSession()
-    console.log("Session check:", existingSession ? "Found" : "None")
+    // Initialize session with validation
+    const hasValidSession = sessionManager.initializeSession()
 
-    if (existingSession) {
-      // STEP 2: Validate session based on last activity
-      const isValid = tabTracker.isSessionValid()
-
-      if (isValid) {
-        console.log("✅ Session is valid - user stays logged in")
+    if (hasValidSession) {
+      const session = sessionManager.getSession()
+      if (session) {
         setIsAuthenticated(true)
-        setUsername(existingSession.username)
-      } else {
-        console.log("❌ Session expired - clearing session")
-        sessionManager.clearSession()
-        setIsAuthenticated(false)
-        setUsername("")
+        setUsername(session.username)
+        console.log("✅ Valid session found - user logged in")
       }
     }
 
-    // STEP 3: Initialize tab tracking
+    // Initialize tab tracking
     tabTracker.init()
     setIsLoading(false)
 
@@ -45,22 +37,24 @@ export default function App() {
     const handleSessionChange = (event: CustomEvent) => {
       const { type, session } = event.detail
 
-      if (type === "login") {
+      if (type === "login" && session) {
         setIsAuthenticated(true)
         setUsername(session.username)
         console.log("✅ Login from another tab")
       } else if (type === "logout") {
         setIsAuthenticated(false)
         setUsername("")
-        console.log("❌ Logout from another tab")
+        console.log("❌ Logout detected")
       }
     }
 
     window.addEventListener("sessionChange", handleSessionChange as EventListener)
 
+    // Cleanup on unmount
     return () => {
       window.removeEventListener("sessionChange", handleSessionChange as EventListener)
       tabTracker.cleanup()
+      sessionManager.cleanup()
     }
   }, [])
 
